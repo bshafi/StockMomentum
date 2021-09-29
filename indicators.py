@@ -23,4 +23,30 @@ def niner(data: Iterable[Tuple[datetime, float, float, float, float]]):
             red_else_green = candlestick_is_red(candlestick)
             chain.append(candlestick)
             
+def tweezer_bottom(data: Iterable[Tuple[datetime, float, float, float, float]]):
+    prev = None
+    ERROR = 0.01
+    for (timestamp, open, high, low, close) in data:
+        if prev == None:
+            prev = (timestamp, open, high, low, close)
+            continue
+        prev_timestamp, prev_open, prev_high, prev_ow, prev_close = prev
+        if abs(prev_close - open) < ERROR:
+            yield prev
+        prev = (timestamp, open, high, low, close)
+        
+#def bullish_divergence(data: Iterable[Tuple[datetime, float, float, float, float, float]]):
 
+
+def price_opens_lower_than_prev(data: Iterable[Tuple[datetime, float, float, float, float]]):
+    prev = None
+    for (timestamp, open, high, low, close) in data:
+        if prev == None:
+            prev = (timestamp, open, high, low, close)
+            continue
+        prev_timestamp, prev_open, prev_high, prev_ow, prev_close = prev
+        if open < prev_open:
+            yield prev
+        prev = (timestamp, open, high, low, close)
+
+        
