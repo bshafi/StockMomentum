@@ -54,10 +54,9 @@ def alphavantage_db():
 
 def initialize_alphavantage_db():
     con = alphavantage_db()
-    tables = con.execute("""
-        SELECT name FROM sqlite_master WHERE type='table';
-    """).fetchall()
+    tables = con.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
     table_names = [table_name for (table_name,) in tables]
+    view_names = [view_name for (view_name,) in con.execute("SELECT name FROM sqlite_master WHERE type='view';").fetchall()]
     if "candlestick_5min" not in table_names:
         con.execute("""
             CREATE TABLE candlestick_5min(
@@ -133,6 +132,49 @@ def initialize_alphavantage_db():
                 close REAL NOT NULL
             );
         """)
+    if "delta_candlestick_5min" not in view_names:
+        con.execute("""CREATE VIEW delta_candlestick_5min AS
+        SELECT symbol, timestamp, open, high, low, close
+        FROM (SELECT
+                symbol,
+                timestamp,
+                open  - LEAD(open, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS open,
+                high  - LEAD(high, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS high,
+                low   - LEAD(low, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS low,
+                close - LEAD(close, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS close
+            FROM candlestick_5min
+            ORDER BY timestamp DESC
+        ) WHERE timestamp not in (SELECT MIN(timestamp) FROM candlestick_5min GROUP BY symbol);
+        """)
+    if "delta_vix_daily" not in view_names:
+        con.execute("""CREATE VIEW delta_vix_daily AS
+            SELECT timestamp, open, high, low, close 
+            FROM (SELECT
+                timestamp,
+                open  - LEAD(open, 1, 0)  OVER (ORDER BY timestamp DESC)  AS open,
+                high  - LEAD(high, 1, 0)  OVER (ORDER BY timestamp DESC)  AS high,
+                low   - LEAD(low, 1, 0)  OVER (ORDER BY timestamp DESC)  AS low,
+                close - LEAD(close, 1, 0)  OVER (ORDER BY timestamp DESC)  AS close
+            FROM vix_daily
+            ORDER BY timestamp DESC
+            ) WHERE  timestamp not in (SELECT MIN(timestamp) FROM vix_daily);
+        """)
+    if "delta_candlestick_daily" not in view_names:
+        con.execute("""CREATE VIEW delta_candlestick_daily AS 
+        SELECT symbol, timestamp, open, high, low, close
+            FROM (SELECT
+                symbol,
+                timestamp,
+                open  - LEAD(open, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS open,
+                high  - LEAD(high, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS high,
+                low   - LEAD(low, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS low,
+                close - LEAD(close, 1, 0)  OVER (PARTITION BY symbol ORDER BY timestamp DESC)  AS close
+            FROM candlestick_daily
+            ORDER BY timestamp DESC)
+            WHERE timestamp not in (SELECT MIN(timestamp) FROM candlestick_daily GROUP BY symbol);
+        """)
+
+
     con.commit()
     con.close()
 
