@@ -4,17 +4,6 @@ from alphavantage import alphavantage_db
 from enum import Enum
 import sqlite3
 
-def iter_query(con: sqlite3.Connection, query, buf_size=100):
-    data = con.execute(query).fetchall()
-    for point in data:
-        yield point
-    #cur = con.execute(query)
-    #data = cur.fetchmany(buf_size)
-    #while len(data) != 0:
-    #    for i in range(len(data)):
-    #        yield data[i]
-    #    cur.fetchmany(buf_size)
-
 class StockAction(Enum):
     BUY = 0
     SELL = 1
@@ -32,8 +21,8 @@ def buying_enclosed_vix_daily(sell_point, buy_point, start_date: datetime, end_d
     """
     actions = []
     has_bought = False
-    bob = list(iter_query(con, QUERY))
-    for (timestamp, vix) in bob:
+    vix_data = con.execute(QUERY).fetchall()
+    for (timestamp, vix) in vix_data:
         date = datetime.fromtimestamp(timestamp, timezone.utc)
         if has_bought:
             if vix < buy_point:
