@@ -1,5 +1,9 @@
-from datetime import date, datetime, timezone
-from typing import Tuple,List
+from datetime import date, datetime, timedelta, timezone
+from types import CellType
+from typing import Any, Tuple,List
+
+from numpy.lib.twodim_base import mask_indices
+
 from alphavantage import alphavantage_db
 from enum import Enum
 import sqlite3
@@ -11,7 +15,7 @@ class StockAction(Enum):
 def buying_enclosed_vix_daily(sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
     assert(0 <= sell_point <= 100)
     assert(0 <= buy_point <= 100)
-    assert(buy_point < sell_point)
+    assert(buy_point > sell_point)
 
     con = alphavantage_db()
     QUERY = f"""SELECT timestamp, close as vix
@@ -25,16 +29,108 @@ def buying_enclosed_vix_daily(sell_point, buy_point, start_date: datetime, end_d
     for (timestamp, vix) in vix_data:
         date = datetime.fromtimestamp(timestamp, timezone.utc)
         if has_bought:
-            if vix < buy_point:
+            if vix >= buy_point:
                 actions.append((date, StockAction.SELL))
                 has_bought = False
         else:
-            if vix > sell_point:
+            if vix <= sell_point:
                 actions.append((date, StockAction.BUY))
                 has_bought = True
     return actions
 
+def get_mins_and_maxs(data, key) -> Tuple[List[Any], List[Any]]:
+    mins = []
+    maxs = []
+    for i in range(1, len(data) - 1):
+        left = key(data[i - 1])
+        right = key(data[i + 1])
+        center = key(data[i])
+        if left < center and right < center:
+            maxs.append(data[i])
+        if left > center and right > center:
+            mins.append(data[i])
+    return (mins, maxs)
+
+def moving_avg_vix_daily(days_forward=1, days_prior=10) -> List[Tuple[datetime, float, float]]:
+    con = alphavantage_db()
+    vix_daily_close = con.execute("""
+        SELECT timestamp, close FROM vix_daily
+    """).fetchall()
+    vix_perdictions = []
+    for i in range(days_prior, len(vix_daily_close)-1):
+        timestamp, close = vix_daily_close[i]
+        date = datetime.fromtimestamp(timestamp, timezone.utc)
+        mins, maxs = get_mins_and_maxs(vix_daily_close[i-days_prior:i+1], lambda row: row[1])
+        avg_mins = 0
+        for (timestamp, min) in mins:
+            avg_mins = avg_mins + min
+        if len(mins) == 0:
+            avg_mins = 0
+        else:
+            avg_mins = avg_mins / len(mins)
+        avg_maxs = 0
+        for (timestamp, max) in maxs:
+            avg_maxs = avg_maxs + max
+        if len(maxs) == 0:
+            avg_maxs = 0
+        else:
+            avg_maxs = avg_maxs / len(maxs)
+        vix_perdictions.append((date + timedelta(days=days_forward), avg_mins, avg_maxs))
+    return vix_perdictions
+
+def buy_moving_avg_vix_daily(start_date: datetime, end_date: datetime, weight=1, days_prior=10) -> List[Tuple[datetime, StockAction]]:
+    if weight < 0:
+        raise Exception("Invalid weight")
+
+    real_min_time = start_date - timedelta(days=days_prior)
+    con = alphavantage_db()
+    vix_daily_close = con.execute(f"""
+        SELECT timestamp, close FROM vix_daily
+        WHERE timestamp BETWEEN {real_min_time.timestamp()} AND {end_date.timestamp()}
+    """).fetchall()
+    actions = []
+    has_bought = False
+    for i in range(days_prior, len(vix_daily_close)-1):
+        timestamp, vix = vix_daily_close[i]
+        date = datetime.fromtimestamp(timestamp, timezone.utc)
+        minimums, maximums = get_mins_and_maxs(vix_daily_close[i-days_prior:i+1], lambda row: row[1])
+        avg_mins = 0
+        for (timestamp, minimum) in minimums:
+            avg_mins = avg_mins + minimum
+        if len(minimums) == 0:
+            avg_mins = 0
+        else:
+            avg_mins = avg_mins / len(minimums)
+        avg_maxs = 0
+        for (timestamp, maximum) in maximums:
+            avg_maxs = avg_maxs + maximum
+        if len(maximums) == 0:
+            avg_maxs = 0
+        else:
+            avg_maxs = avg_maxs / len(maximums)
+        center = (avg_mins + avg_maxs) / 2
+        offset = abs(avg_maxs - center)
+        # assert(offset >= 0)
+        buy_point = min(center + weight * offset, 90)
+        sell_point = max(center - weight * offset, 10)
+
+        if has_bought:
+            if vix >= buy_point:
+                actions.append((date, StockAction.SELL))
+                has_bought = False
+        else:
+            if vix <= sell_point:
+                actions.append((date, StockAction.BUY))
+                has_bought = True
+        
+    return actions
+
+
+
 def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime, StockAction]], symbol) -> float:
+    if len(h_actions) == 0:
+        return 0
+
     actions = sorted(h_actions, key=lambda x: x[0])
     min_date = actions[0][0]
     max_date = actions[-1][0]
@@ -45,9 +141,22 @@ def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime
         ORDER BY timestamp ASC
     """).fetchall()
 
+    if len(data) == 0:
+        return 0
+
+    min_symbol_date = datetime.fromtimestamp(data[0][0], timezone.utc)
+    max_symbol_date = datetime.fromtimestamp(data[-1][0], timezone.utc)
+    actions = list(filter(lambda x: min_symbol_date <= x[0] <= max_symbol_date, actions))
+    if len(actions) != 0 and actions[0][1] == StockAction.SELL:
+        actions = actions[1:]
+    
+    if len(actions) == 0:
+        return 0
+
     gains = 0
     last_buying_price = None
     i = 0
+
     for (timestamp, close) in data:
         date = datetime.fromtimestamp(timestamp, timezone.utc)
         if actions[i][0] <= date:
@@ -58,12 +167,11 @@ def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime
                 last_buying_price = close
             elif action == StockAction.SELL:
                 assert(last_buying_price != None)
-                gains = gains + (close - last_buying_price)
+                gains = gains + (close - last_buying_price) / last_buying_price
                 last_buying_price = None
 
         if i >= len(actions):
             break
-    return gains
-
+    return gains * 100
 
 
