@@ -19,6 +19,7 @@ class AlphvantageError(BaseException):
 
 DEFAULT_RSI_TIME_PERIOD = 14
 
+
 def alphavantage_request(uri):
     time.sleep(60/5)
     req = requests.get(uri)
@@ -278,27 +279,39 @@ def add_symbol_to_db(symbol, last_datetime_stored=None):
         """)
     con.execute("END TRANSACTION;")
 
-    for slice_name in intraday_extended_slices():
-        uri = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY_EXTENDED&symbol={symbol}&interval=5min&slice={slice_name}&apikey={alphavantage_key}&adjusted=false"
-        req = alphavantage_request(uri)
-        last_time_entry = None
-        con.execute("BEGIN TRANSACTION;")
-        for (timestamp, open, high, low, close, volume) in iter_csv_rows_from_request(req):
-            # Alphavantage stores its timestamp in EST Since EST = UTC - 5
-            # then UTC = EST + 5
-            
-            con.execute(f"""
-                INSERT OR IGNORE INTO candlestick_5min (symbol, timestamp, open, high, low, close, volume)
-                VALUES ('{symbol}', strftime('%s','{timestamp}') + strftime('%%H', '5'), {open}, {high}, {low}, {close}, {volume});
-            """)
-            cur_datetime = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S') + timedelta(hours=5)
-            if last_time_entry == None:
-                last_time_entry = cur_datetime
-            last_time_entry = min(cur_datetime, last_time_entry)
-        
-        con.execute("END TRANSACTION;")
-        if last_datetime_stored != None and last_time_entry <= last_datetime_stored:
-            break
+
+    daily_url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={alphavantage_key}&datatype=csv&outputsize=full'
+    daily_req = alphavantage_request(daily_url)
+    con.execute("BEGIN TRANSACTION")
+    for (date, open, high, low, close, volume) in iter_csv_rows_from_request(daily_req):
+        timestamp = datetime.strptime(date, '%Y-%m-%d').timestamp()
+        con.execute(f"""
+            INSERT OR IGNORE INTO candlestick_daily (symbol, timestamp, open, high, low, close, volume)
+            VALUES ('{symbol}', {timestamp}, {open}, {high}, {low}, {close}, {volume});
+        """)
+    con.execute("END TRANSACTION")
+
+    #for slice_name in intraday_extended_slices():
+    #    uri = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY_EXTENDED&symbol={symbol}&interval=5min&slice={slice_name}&apikey={alphavantage_key}&adjusted=false"
+    #    req = alphavantage_request(uri)
+    #    last_time_entry = None
+    #    con.execute("BEGIN TRANSACTION;")
+    #    for (timestamp, open, high, low, close, volume) in iter_csv_rows_from_request(req):
+    #        # Alphavantage stores its timestamp in EST Since EST = UTC - 5
+    #        # then UTC = EST + 5
+    #        
+    #        con.execute(f"""
+    #            INSERT OR IGNORE INTO candlestick_5min (symbol, timestamp, open, high, low, close, volume)
+    #            VALUES ('{symbol}', strftime('%s','{timestamp}') + strftime('%%H', '5'), {open}, {high}, {low}, {close}, {volume});
+    #        """)
+    #        cur_datetime = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S') + timedelta(hours=5)
+    #        if last_time_entry == None:
+    #            last_time_entry = cur_datetime
+    #        last_time_entry = min(cur_datetime, last_time_entry)
+    #    
+    #    con.execute("END TRANSACTION;")
+    #    if last_datetime_stored != None and last_time_entry <= last_datetime_stored:
+    #        break
 
     con.commit()
     con.close()
