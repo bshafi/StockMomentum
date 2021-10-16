@@ -2,32 +2,31 @@ from datetime import date, datetime, timedelta, timezone
 from types import CellType
 from typing import Any, Tuple,List
 
-from numpy.lib.twodim_base import mask_indices
-
 from alphavantage import alphavantage_db
 from enum import Enum
-import sqlite3
+import psycopg2
 
 class StockAction(Enum):
     BUY = 0
     SELL = 1
 
-def buying_enclosed_vix_daily(sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
+def buying_enclosed_vix_daily(con: psycopg2.connection, sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
     assert(0 <= sell_point <= 100)
     assert(0 <= buy_point <= 100)
     assert(buy_point > sell_point)
 
-    con = alphavantage_db()
-    QUERY = f"""SELECT timestamp, close as vix
-        FROM vix_daily
-        WHERE timestamp BETWEEN {start_date.timestamp()} AND {end_date.timestamp()}
-        ORDER BY timestamp ASC
-    """
+    cursor = con.cursor()
+
+
     actions = []
     has_bought = False
-    vix_data = con.execute(QUERY).fetchall()
+    vix_data = cursor.execute("""SELECT timestamp, close as vix
+        FROM vix_daily
+        WHERE timestamp BETWEEN %s AND %s
+        ORDER BY timestamp ASC
+    """, (start_date, end_date))
+    vix_data = cursor.fetchall()
     for (timestamp, vix) in vix_data:
-        date = datetime.fromtimestamp(timestamp, timezone.utc)
         if has_bought:
             if vix >= buy_point:
                 actions.append((date, StockAction.SELL))
@@ -51,15 +50,17 @@ def get_mins_and_maxs(data, key) -> Tuple[List[Any], List[Any]]:
             mins.append(data[i])
     return (mins, maxs)
 
-def moving_avg_vix_daily(days_forward=1, days_prior=10) -> List[Tuple[datetime, float, float]]:
-    con = alphavantage_db()
-    vix_daily_close = con.execute("""
+def moving_avg_vix_daily(con, days_forward=1, days_prior=10) -> List[Tuple[datetime, float, float]]:
+    cursor = con.cursor()
+    cursor.execute("""
         SELECT timestamp, close FROM vix_daily
-    """).fetchall()
+    """)
+    vix_daily_close = cursor.fetchall()
+
     vix_perdictions = []
     for i in range(days_prior, len(vix_daily_close)-1):
         timestamp, close = vix_daily_close[i]
-        date = datetime.fromtimestamp(timestamp, timezone.utc)
+        date = timestamp
         mins, maxs = get_mins_and_maxs(vix_daily_close[i-days_prior:i+1], lambda row: row[1])
         avg_mins = 0
         for (timestamp, min) in mins:
@@ -78,21 +79,21 @@ def moving_avg_vix_daily(days_forward=1, days_prior=10) -> List[Tuple[datetime, 
         vix_perdictions.append((date + timedelta(days=days_forward), avg_mins, avg_maxs))
     return vix_perdictions
 
-def buy_moving_avg_vix_daily(start_date: datetime, end_date: datetime, weight=1, days_prior=10) -> List[Tuple[datetime, StockAction]]:
+def buy_moving_avg_vix_daily(con, start_date: datetime, end_date: datetime, weight=1, days_prior=10) -> List[Tuple[datetime, StockAction]]:
     if weight < 0:
         raise Exception("Invalid weight")
 
     real_min_time = start_date - timedelta(days=days_prior)
-    con = alphavantage_db()
-    vix_daily_close = con.execute(f"""
+    cursor = con.cursor()
+    cursor.execute(f"""
         SELECT timestamp, close FROM vix_daily
-        WHERE timestamp BETWEEN {real_min_time.timestamp()} AND {end_date.timestamp()}
-    """).fetchall()
+        WHERE timestamp BETWEEN %s AND %s
+    """, (real_min_time, end_date))
+    vix_daily_close = cursor.fetchall()
     actions = []
     has_bought = False
     for i in range(days_prior, len(vix_daily_close)-1):
         timestamp, vix = vix_daily_close[i]
-        date = datetime.fromtimestamp(timestamp, timezone.utc)
         minimums, maximums = get_mins_and_maxs(vix_daily_close[i-days_prior:i+1], lambda row: row[1])
         avg_mins = 0
         for (timestamp, minimum) in minimums:
@@ -127,7 +128,7 @@ def buy_moving_avg_vix_daily(start_date: datetime, end_date: datetime, weight=1,
 
 
 
-def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime, StockAction]], symbol) -> float:
+def percent_return_daily(con, h_actions: List[Tuple[datetime, StockAction]], symbol) -> float:
     if len(h_actions) == 0:
         return 0
 
@@ -135,17 +136,19 @@ def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime
     min_date = actions[0][0]
     max_date = actions[-1][0]
 
-    data = con.execute(f"""
+    cursor = con.cursor()
+    cursor.execute(f"""
         SELECT timestamp, close FROM candlestick_daily
-        WHERE symbol = '{symbol}' AND timestamp BETWEEN {min_date.timestamp()} AND {max_date.timestamp()}
+        WHERE symbol = %s AND timestamp BETWEEN %s AND %s
         ORDER BY timestamp ASC
-    """).fetchall()
+    """, (symbol, min_date, max_date))
+    data = cursor.fetchall()
 
     if len(data) == 0:
         return 0
 
-    min_symbol_date = datetime.fromtimestamp(data[0][0], timezone.utc)
-    max_symbol_date = datetime.fromtimestamp(data[-1][0], timezone.utc)
+    min_symbol_date = data[0][0]
+    max_symbol_date = data[-1][0]
     actions = list(filter(lambda x: min_symbol_date <= x[0] <= max_symbol_date, actions))
     if len(actions) != 0 and actions[0][1] == StockAction.SELL:
         actions = actions[1:]
@@ -158,7 +161,7 @@ def percent_return_daily(con: sqlite3.Connection, h_actions: List[Tuple[datetime
     i = 0
 
     for (timestamp, close) in data:
-        date = datetime.fromtimestamp(timestamp, timezone.utc)
+        date = timestamp
         if actions[i][0] <= date:
             action_date, action = actions[i]
             i = i + 1
