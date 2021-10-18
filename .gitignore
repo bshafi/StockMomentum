@@ -133,3 +133,4 @@ databases
 credentials.json
 credentials.ini
 credentials
+aws_lambda.zip
