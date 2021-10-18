@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import CellType
 from typing import Any, Tuple,List
 
-from alphavantage import historical_database
+from sm_util import historical_database
 from enum import Enum
 import psycopg2
 
@@ -10,7 +10,7 @@ class StockAction(Enum):
     BUY = 0
     SELL = 1
 
-def buying_enclosed_vix_daily(con: psycopg2.connection, sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
+def buying_enclosed_vix_daily(con, sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
     assert(0 <= sell_point <= 100)
     assert(0 <= buy_point <= 100)
     assert(buy_point > sell_point)
