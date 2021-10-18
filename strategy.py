@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import CellType
 from typing import Any, Tuple,List
 
-from alphavantage import alphavantage_db
+from alphavantage import historical_database
 from enum import Enum
 import psycopg2
 
