@@ -1,11 +1,10 @@
 from datetime import date, datetime, timedelta, timezone
-from json.decoder import JSONDecodeError
 from decimal import Decimal
 from psycopg2.extras import execute_batch
 import time
 import psycopg2
 import requests
-import csv
+from sm_util import iter_csv_rows_from_request, historical_database
 
 alphavantage_key = None
 
@@ -36,36 +35,16 @@ def alphavantage_request(uri):
         raise AlphvantageError(error)
     return req
 
-def iter_csv_rows_from_request(req, skip_first = True):
-    rdr = csv.reader(req.content.decode('utf-8').splitlines(), delimiter=',')
-    first_row = True
-    second_row_checked = False
-    for row in rdr:
-        # Checks if the second row is empty
-        # In that case return an empty iterator
-        if not first_row and not second_row_checked:
-            if all([elem == '' for elem in row]):
-                break
-    
-        if first_row and skip_first:
-            continue
-        first_row = False
-
-        yield row
-
-def historical_database():
-    return psycopg2.connect(open('credentials').read());
-
 def intraday_extended_slices():
     for year in range(1, 3):
         for month in range(1, 13):
-            yield f"year{year}month{month}";
+            yield f"year{year}month{month}"
 
 def update_vix_daily(con):
     url = 'https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv'
     req = requests.get(url)
     cursor = con.cursor()
-    cursor.execute("BEGIN TRANSACTION;")
+    cursor.execute("BEGIN TRANSACTION")
 
     def convert_row(row):
         timestamp, open, high, low, close = row
@@ -128,13 +107,13 @@ def add_symbol_2year_hist(con, symbol):
         SELECT year2_history
         FROM meta_updates_table
         WHERE symbol = %s AND table_name = 'candlestick_5min'
-        LIMIT 1;
+        LIMIT 1
     """, (symbol,))
     rows = cursor.fetchall()
     if len(rows) == 0:
-        cursor.execute("BEGIN TRANSACTION;")
+        cursor.execute("BEGIN TRANSACTION")
         cursor.execute("INSERT INTO meta_updates_table VALUES(%s, 'candlestick_5min')", (symbol,))
-        cursor.execute("COMMIT TRANSACTION;")
+        cursor.execute("COMMIT TRANSACTION")
         cursor.execute("""
             SELECT year2_history
             FROM meta_updates_table
@@ -160,7 +139,7 @@ def add_symbol_2year_hist(con, symbol):
                 %s,
                 %s,
                 %s
-            ) ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING;
+            ) ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING
         """, vars_list)
         cursor.execute("COMMIT TRANSACTION")
 
