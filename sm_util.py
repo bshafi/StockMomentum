@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime
+from typing import Dict
 import psycopg2
 
 credentials_file = None
@@ -14,6 +15,22 @@ class ArgumentError(Exception):
     def get_msg(self):
         return self.msg
 
+def check_args(args, arg_requirements):
+    arg_errors = []
+    parsed_args = {}
+    for (key, parse_arg) in arg_requirements.items():
+        try:
+            arg = args.get(key, None)
+            arg_value = parse_arg(arg)
+            parsed_args[key] = arg_value
+        except ArgumentError as arg_error:
+            arg_errors.append((key, arg_error))
+    if len(arg_errors) > 0:
+        all_errors_str = str([key + ":" + arg_error.get_msg() + "\n" for key, arg_error in arg_errors])
+        raise ArgumentError(all_errors_str)
+    return parsed_args
+
+
 def iter_csv_rows_from_request(req, skip_first = True):
     rdr = csv.reader(req.content.decode('utf-8').splitlines(), delimiter=',')
     first_row = True
@@ -26,8 +43,8 @@ def iter_csv_rows_from_request(req, skip_first = True):
                 break
     
         if first_row and skip_first:
+            first_row = False
             continue
-        first_row = False
 
         yield row
 
@@ -59,4 +76,4 @@ def parse_date(s):
     if date != None:
         return date
     else:
-        raise ValueError("Date was in an improper format")
+        raise ArgumentError("Date was in an improper format")

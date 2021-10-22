@@ -10,17 +10,53 @@ class StockAction(Enum):
     BUY = 0
     SELL = 1
 
-def buying_enclosed_vix_daily(con, sell_point, buy_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
-    assert(0 <= sell_point <= 100)
+def sentiment_trader_antivix(con, buy_point, observation_period, symbol, start_date: datetime, end_date: datetime):
+    cursor = con.cursor()
+    cursor.execute("""
+        SELECT timestamp, close
+        FROM vix_daily
+        WHERE timestamp BETWEEN %s AND %s 
+        ORDER BY timestamp ASC
+    """, (start_date, end_date))
+    vix_data = cursor.fetchall()
+    cursor.execute("""
+        SELECT timestamp, close
+        FROM candlestick_daily
+        WHERE timestamp BETWEEN %s AND %s AND symbol = %s
+        ORDER BY timestamp ASC
+    """, (start_date, end_date, symbol))
+    
+    candlestick_data = cursor.fetchall()
+    candlestick_i = 0
+    obs_date = None
+    actions = []
+    for (timestamp, vix) in vix_data:
+        while candlestick_i < len(candlestick_data) and candlestick_data[candlestick_i][0] < timestamp:
+            candlestick_i = candlestick_i + 1
+        if candlestick_i >= len(candlestick_data):
+            break
+
+        (candlestick_timestamp, price) = candlestick_data[candlestick_i]
+        if obs_date == None and vix >= buy_point:
+            actions.append((candlestick_timestamp, StockAction.BUY, price))
+            obs_date = candlestick_timestamp
+        if obs_date != None and (timestamp - obs_date) >= timedelta(days=observation_period):
+            actions.append((candlestick_timestamp, StockAction.SELL, price))
+            obs_date = None
+    return actions
+            
+
+
+def buying_enclosed_vix_daily(con, buy_point, sell_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
     assert(0 <= buy_point <= 100)
-    assert(buy_point > sell_point)
+    assert(0 <= sell_point <= 100)
+    assert(sell_point > buy_point)
 
     cursor = con.cursor()
 
-
     actions = []
     has_bought = False
-    vix_data = cursor.execute("""SELECT timestamp, close as vix
+    cursor.execute("""SELECT timestamp, close as vix
         FROM vix_daily
         WHERE timestamp BETWEEN %s AND %s
         ORDER BY timestamp ASC
@@ -28,11 +64,11 @@ def buying_enclosed_vix_daily(con, sell_point, buy_point, start_date: datetime, 
     vix_data = cursor.fetchall()
     for (timestamp, vix) in vix_data:
         if has_bought:
-            if vix >= buy_point:
+            if vix >= sell_point:
                 actions.append((date, StockAction.SELL))
                 has_bought = False
         else:
-            if vix <= sell_point:
+            if vix <= buy_point:
                 actions.append((date, StockAction.BUY))
                 has_bought = True
     return actions
@@ -127,6 +163,20 @@ def buy_moving_avg_vix_daily(con, start_date: datetime, end_date: datetime, weig
     return actions
 
 
+def percent_gains(actions: List[Tuple[datetime, StockAction, float]]):
+    gains = 0
+    last_buying_price = None
+    for timestamp, action, price in actions:
+        assert(action in [StockAction.BUY, StockAction.SELL])
+
+        if action == StockAction.BUY:
+            assert(last_buying_price == None)
+            last_buying_price = price
+        elif action == StockAction.SELL:
+            assert(last_buying_price != None)
+            gains = gains + (price - last_buying_price) / last_buying_price
+            last_buying_price = None
+    return gains
 
 def percent_return_daily(con, h_actions: List[Tuple[datetime, StockAction]], symbol) -> float:
     if len(h_actions) == 0:
