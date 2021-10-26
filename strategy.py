@@ -1,6 +1,6 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from types import CellType
-from typing import Any, Tuple,List
+from typing import Any, Tuple, List
 
 from sm_util import historical_database
 from enum import Enum
@@ -44,8 +44,44 @@ def sentiment_trader_antivix(con, buy_point, observation_period, symbol, start_d
             actions.append((candlestick_timestamp, StockAction.SELL, price))
             obs_date = None
     return actions
-            
 
+
+def sentiment_trader_antivix_5min(con, buy_point, observation_period, symbol, start_date: datetime, end_date: datetime):
+    assert(end_date <= datetime(2021, 10, 1, tzinfo=timezone.utc))
+    with con.cursor() as cursor:
+        cursor.execute("""
+            SELECT timestamp, close
+            FROM vix_5min
+            WHERE timestamp BETWEEN %s AND %s 
+            ORDER BY timestamp ASC
+        """, (start_date, end_date))
+        vix_data = cursor.fetchall()
+        cursor.execute("""
+            SELECT timestamp, close
+            FROM candlestick_5min
+            WHERE timestamp BETWEEN %s AND %s AND symbol = %s
+            ORDER BY timestamp ASC
+        """, (start_date, end_date, symbol))
+        
+        candlestick_data = cursor.fetchall()
+        candlestick_i = 0
+        obs_date = None
+        actions = []
+        for (timestamp, vix) in vix_data:
+            while candlestick_i < len(candlestick_data) and candlestick_data[candlestick_i][0] < timestamp:
+                candlestick_i = candlestick_i + 1
+            if candlestick_i >= len(candlestick_data):
+                break
+
+            if (9 <= timestamp.hour <= 17):
+                (candlestick_timestamp, price) = candlestick_data[candlestick_i]
+                if obs_date == None and vix >= buy_point:
+                    actions.append((candlestick_timestamp, StockAction.BUY, price))
+                    obs_date = candlestick_timestamp
+                if obs_date != None and (timestamp - obs_date) >= timedelta(days=observation_period):
+                    actions.append((candlestick_timestamp, StockAction.SELL, price))
+                    obs_date = None
+        return actions
 
 def buying_enclosed_vix_daily(con, buy_point, sell_point, start_date: datetime, end_date: datetime) -> List[Tuple[datetime, StockAction]]:
     assert(0 <= buy_point <= 100)
@@ -228,3 +264,81 @@ def percent_return_daily(con, h_actions: List[Tuple[datetime, StockAction]], sym
     return gains * 100
 
 
+
+def avg_min_loss(SYMBOL, start_date, end_date, actions_list = None, buy_point = 19, observation_period = 3, wins_only = False):
+    con = historical_database()
+    data = None
+    with con.cursor() as cursor:
+        #TODO: not getting data from earlier than oct 8
+        cursor.execute("SELECT timestamp, close FROM candlestick_5min WHERE symbol = %s AND timestamp BETWEEN %s AND %s ORDER BY timestamp ASC", (SYMBOL, start_date, end_date))
+        data = cursor.fetchall()
+    actions = sentiment_trader_antivix_5min(con, buy_point, observation_period, SYMBOL, start_date, end_date)
+
+    def chunk2(l):
+        for i in range(0, len(l), 2):
+            data = l[i:i+2]
+            if len(data) == 2:
+                yield data
+
+    last_i = 0
+    values = []
+    for (buy, sell) in chunk2(actions):
+        buy_timestamp, buy_action, buy_price = buy
+        assert(buy_action == StockAction.BUY)
+        sell_timestamp, sell_action, sell_price = sell
+        assert(sell_action == StockAction.SELL)
+        buy_i = last_i
+        while data[buy_i][0] < buy_timestamp:
+            buy_i = buy_i + 1
+        sell_i = last_i
+        while data[sell_i][0] < sell_timestamp:
+            sell_i = sell_i + 1
+        
+        min_value = None
+        for i in range(buy_i, sell_i):
+            if min_value == None or data[i][1] < min_value:
+                min_value = data[i][1]
+        assert(min_value != None)
+        if min_value != None and float(min_value) < 0.99 * float(buy_price) and (not wins_only or sell_price > buy_price):
+            values.append((buy_timestamp, sell_timestamp, float((min_value - buy_price)/ buy_price) * 100))
+        
+        last_i = sell_i
+    return values
+
+def count_retests(con, symbol, start_date: datetime, end_date: datetime, look_forward: timedelta = timedelta(days=1)):
+    data = None
+    with con.cursor() as cursor:
+        cursor.execute("""
+            SELECT timestamp, open, high, low, close, volume FROM candlestick_5min
+            WHERE symbol = %s AND timestamp BETWEEN %s AND %s
+            ORDER BY TIMESTAMP ASC
+        """, (symbol, start_date, end_date))
+        data = cursor.fetchall()
+    last_datetime = data[-1] - abs(look_forward)
+    last_candlestick_index = None
+    for i in range(len(data)-1, 0-1, -1):
+        timestamp, open, high, low, close, volume = data[i]
+        if last_datetime >= timestamp:
+            last_candlestick_index = i
+            break
+    retest_counts = []
+    for i in range(0, last_candlestick_index):
+        start_timestamp, start_open, start_high, start_low, start_close, start_volume = data[i]
+        prev_timestamp, prev_open, prev_high, prev_low, prev_close, prev_volume = data[i]
+        retest_count = 0
+        j = i + 1
+        while j < last_candlestick_index and (data[j][0] - start_timestamp) <= look_forward:
+            assert((data[j][0] - start_timestamp) > timedelta(days=0))
+            cur_timestamp, cur_open, cur_high, cur_low, cur_close, cur_volume = data[j]
+
+            if prev_high <= start_close <= cur_high or prev_close <= start_close <= cur_close:
+                retest_count = retest_count + 1
+
+            prev_timestamp, prev_open, prev_high, prev_low, prev_close, prev_volume = data[j]
+            j = j + 1
+        retest_counts.append((start_timestamp, retest_count))
+    return retest_counts
+
+
+
+    
