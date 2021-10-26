@@ -1,9 +1,9 @@
 from os import pipe
 import psycopg2
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from sm_util import ArgumentError, parse_date, check_args
-from strategy import percent_return_daily, buying_enclosed_vix_daily, sentiment_trader_antivix, percent_gains
+from strategy import percent_return_daily, buying_enclosed_vix_daily, sentiment_trader_antivix, percent_gains, sentiment_trader_antivix_5min
 
 def check_symbol(con, symbol):
     with con.cursor() as cursor:
@@ -75,50 +75,78 @@ def query_table(con, params):
             if not isinstance(row[i], datetime):
                 row_str = row_str +  str(row[i])
             else:
-                row_str = row_str + str(row[i].strftime(''))
+                row_str = row_str + str(row[i])
             if i + 1 < len(row):
                 row_str = row_str + ","
         row_str = row_str + '\n'
 
     return str.encode(row_str)
-    
+
 def backtest_data(con, params):
     VALID_BACKTESTERS = [
-        "sentiment_antivix"
+        "sentiment_antivix",
+        "sentiment_antivix_5min"
     ]
-    def check_backtester(x):
-        if x in VALID_BACKTESTERS:
+    VALID_STATS = [
+        None,
+        'sum'
+    ]
+    def check_in_list(x, l):
+        if x in l:
             return x
         else:
-            raise ArgumentError("Invalid backtester")
-    
+            raise ArgumentError("invalid value")
+
+            
     parsed_args = check_args(params, {
         "symbol": lambda symbol: check_symbol(con, symbol),
         "start_date": parse_date,
         "end_date": parse_date,
         "observation_period": check_num,
         "buy_point": check_num,
-        "backtester": check_backtester
+        "backtester": lambda x: check_in_list(x, VALID_BACKTESTERS),
+        "stats": lambda x: check_in_list(x, VALID_STATS)
     })
 
-    actions = sentiment_trader_antivix(
-        con, 
-        parsed_args['buy_point'], 
-        parsed_args['observation_period'], 
-        parsed_args['symbol'], 
-        parsed_args['start_date'], 
-        parsed_args['end_date']
-    )
-    gains = percent_gains(actions)
-    last_price = None
+    actions = None
+    if parsed_args['backtester'] == 'sentiment_antivix':
+        actions = sentiment_trader_antivix(
+            con, 
+            parsed_args['buy_point'], 
+            parsed_args['observation_period'], 
+            parsed_args['symbol'], 
+            parsed_args['start_date'], 
+            parsed_args['end_date']
+        )
+        gains = percent_gains(actions)
+        last_price = None
+    elif parsed_args['backtester'] == 'sentiment_antivix_5min':
+        actions = sentiment_trader_antivix_5min(
+            con, 
+            parsed_args['buy_point'], 
+            parsed_args['observation_period'], 
+            parsed_args['symbol'], 
+            parsed_args['start_date'], 
+            parsed_args['end_date']
+        )
+        gains = percent_gains(actions)
+        last_price = None
+    
+    stats_name = parsed_args['stats']
+    if stats_name == 'sum':
+        return str.encode(str(gains * 100))
+        
+    obs_period = parsed_args['observation_period']
+    
     ret_str = "timestamp, gain\n"
     for timestamp, action, price in actions:
         if last_price == None:
             last_price = price
         else:
             gain = round(((price - last_price) / last_price) * 100, 2)
-            ret_str = ret_str + f"'{timestamp.date()}, {gain}\n"
+            offset_date = (timestamp - timedelta(days=obs_period)).strftime('%Y-%m-%d %H:%M')
+            ret_str = ret_str + f"'{offset_date}, {gain}\n"
             last_price = None
-
+    
 
     return str.encode(ret_str)

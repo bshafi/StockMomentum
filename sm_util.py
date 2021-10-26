@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime
+from datetime import datetime, tzinfo, timezone
 from typing import Dict
 import psycopg2
 
@@ -57,7 +57,7 @@ def parse_date(s):
     except ValueError:
         pass
     if date != None:
-        return date
+        return datetime.fromtimestamp(date.timestamp(), tz=timezone.utc)
 
         
     try:
@@ -65,7 +65,7 @@ def parse_date(s):
     except ValueError:
         pass
     if date != None:
-        return date
+        return datetime.fromtimestamp(date.timestamp(), tz=timezone.utc)
 
 
     try:
@@ -74,6 +74,6 @@ def parse_date(s):
         pass
     
     if date != None:
-        return date
+        return datetime.fromtimestamp(date.timestamp(), tz=timezone.utc)
     else:
         raise ArgumentError("Date was in an improper format")
