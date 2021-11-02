@@ -43,16 +43,15 @@ def intraday_extended_slices():
 def update_vix_daily(con):
     url = 'https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv'
     req = requests.get(url)
-    with con.cursor() as cursor:
-        cursor.execute("BEGIN TRANSACTION")
+    cursor = con.cursor()
+    cursor.execute("BEGIN TRANSACTION")
 
-        def convert_row(row):
-            timestamp, open, high, low, close = row
-            return (timestamp, Decimal(open), Decimal(high), Decimal(low), Decimal(close))
-        
-        vars_list = list(map(convert_row, iter_csv_rows_from_request(req)))
-        execute_batch(cursor, "INSERT INTO vix_daily(timestamp, open, high, low, close) VALUES (%s, %s, %s, %s, %s) ON CONFLICT ON CONSTRAINT vix_daily_pkey DO NOTHING", vars_list)
-
+    def convert_row(row):
+        timestamp, open, high, low, close = row
+        return (timestamp, Decimal(open), Decimal(high), Decimal(low), Decimal(close))
+    
+    vars_list = list(map(convert_row, iter_csv_rows_from_request(req)))
+    execute_batch(cursor, "INSERT vix_daily(timestamp, open, high, low, close) VALUES (%s, %s, %s, %s, %s) ON CONFLICT ON CONSTRAINT vix_daily_pkey DO NOTHING", vars_list)
 
 
 def convert_candlestick_row(symbol, row):
@@ -60,33 +59,32 @@ def convert_candlestick_row(symbol, row):
     return (symbol, timestamp, Decimal(open), Decimal(high), Decimal(low), Decimal(close), Decimal(volume))
 
 def update_candlestick_daily(con, symbol):
-    with con.cursor() as cursor:
-        daily_url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={alphavantage_key}&datatype=csv&outputsize=full'
-        daily_req = alphavantage_request(daily_url)
+    cursor = con.cursor()
+    daily_url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={alphavantage_key}&datatype=csv&outputsize=full'
+    daily_req = alphavantage_request(daily_url)
 
 
-        vars_list_daily = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(daily_req)))
-        cursor.execute("BEGIN TRANSACTION")
-        execute_batch(cursor, """
-            INSERT INTO candlestick_daily (symbol, timestamp, open, high, low, close, volume)
-            VALUES (%s, (%s AT TIME ZONE 'America/New_York')::TIMESTAMPTZ, %s, %s, %s, %s, %s)
-            ON CONFLICT ON CONSTRAINT candlestick_daily_symbol_timestamp_key DO NOTHING
-        """, vars_list_daily)
-        cursor.execute("COMMIT TRANSACTION")
+    vars_list_daily = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(daily_req)))
+    cursor.execute("BEGIN TRANSACTION")
+    execute_batch(cursor, """
+        INSERT INTO candlestick_daily (symbol, timestamp, open, high, low, close, volume)
+        VALUES (%s, %s::TIMESTAMP AT TIME ZONE 'America/New_York', %s, %s, %s, %s, %s)
+        ON CONFLICT ON CONSTRAINT candlestick_daily_symbol_timestamp_key DO NOTHING
+    """, vars_list_daily)
+    cursor.execute("COMMIT TRANSACTION")
 
 def update_candlestick_5min(con, symbol):
-    with con.cursor() as cursor:
-        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&interval=5min&adjusted=false&symbol={symbol}&apikey={alphavantage_key}&datatype=csv&outputsize=full'
-        req = alphavantage_request(url)
-        vars_list_intraday = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(req)))
-        cursor.execute("BEGIN TRANSACTION")
-        execute_batch(cursor, """
-            INSERT INTO candlestick_5min (symbol, timestamp, open, high, low, close, volume)
-            VALUES (%s, (%s AT TIME ZONE 'America/New_York')::TIMESTAMPTZ, %s, %s, %s, %s, %s)
-            ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING
-        """, vars_list_intraday)
-        cursor.execute("COMMIT TRANSACTION")
-
+    cursor = con.cursor()
+    url = f'https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&adjusted=false&symbol={symbol}&apikey={alphavantage_key}&datatype=csv&outputsize=full'
+    req = alphavantage_request(url)
+    vars_list_intraday = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(req)))
+    cursor.execute("BEGIN TRANSACTION")
+    execute_batch(cursor, """
+        INSERT INTO candlestick_5min (symbol, timestamp, open, high, low, close, volume)
+        VALUES (%s, %s::TIMESTAMP AT TIME ZONE 'America/New_York', %s, %s, %s, %s, %s)
+        ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING
+    """, vars_list_intraday)
+    cursor.execute("COMMIT TRANSACTION")
 
 def update_symbols_in_db():
     print('Updating')
@@ -94,68 +92,38 @@ def update_symbols_in_db():
     cursor = con.cursor()
     update_vix_daily(con)
 
-    cursor.execute("SELECT DISTINCT ON (symbol) symbol, year2_history, last_update FROM meta_updates_table")
-    for (symbol, year2_history, last_update) in cursor.fetchall():
-        if not year2_history:
-            add_symbol_2year_hist(con, symbol)
-        if last_update == None or datetime.now(timezone.utc) - last_update > timedelta(days=1/2):
-            cursor.execute("BEGIN TRANSACTION")
-            update_candlestick_daily(con, symbol)
-            update_candlestick_5min(con, symbol)
-            cursor.execute("UPDATE meta_updates_table SET last_update = %s WHERE symbol = %s AND table_name = 'candlestick_5min'", (datetime.now(timezone.utc), symbol))
-            cursor.execute("UPDATE meta_updates_table SET last_update = %s WHERE symbol = %s AND table_name = 'candlestick_daily'", (datetime.now(timezone.utc), symbol))
-            cursor.execute("COMMIT TRANSACTION")
-        con.commit()
+    print(cursor.execute("SELECT name FROM symbols").fetchall())
+    for (symbol_name,) in cursor.execute("SELECT DISTINCT symbol FROM meta_updates_table").fetchall():
+        update_candlestick_daily(con, symbol_name)
+        update_candlestick_5min(con, symbol_name)
 
+    con.commit()
     con.close()
 
 
 def add_symbol_2year_hist(con, symbol):
-    print('Adding history', symbol)
-    cursor = con.cursor()
-    cursor.execute("""
-        SELECT year2_history
-        FROM meta_updates_table
-        WHERE symbol = %s AND table_name = 'candlestick_5min'
-        LIMIT 1
-    """, (symbol,))
-    rows = cursor.fetchall()
-    if len(rows) == 0:
-        cursor.execute("BEGIN TRANSACTION")
-        cursor.execute("INSERT INTO meta_updates_table VALUES(%s, 'candlestick_5min')", (symbol,))
-        cursor.execute("COMMIT TRANSACTION")
+    with con.cursor() as cursor:
+        for slice_name in intraday_extended_slices():
+            uri = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY_EXTENDED&symbol={symbol}&interval=5min&slice={slice_name}&apikey={alphavantage_key}&adjusted=false"
+            req = alphavantage_request(uri)
+            vars_list = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(req)))
+            cursor.execute("BEGIN TRANSACTION")
+            execute_batch(cursor,"""
+                INSERT INTO candlestick_5min VALUES(
+                    %s,
+                    %s::TIMESTAMP AT TIME ZONE 'America/New_York',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                ) ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING
+            """, vars_list)
+            cursor.execute("COMMIT TRANSACTION")
+
         cursor.execute("""
-            SELECT year2_history
-            FROM meta_updates_table
+            UPDATE meta_updates_table 
+                SET year2_history = 'true' 
             WHERE symbol = %s AND table_name = 'candlestick_5min'
-            LIMIT 1
         """, (symbol,))
-        rows = cursor.fetchall()
-
-    (year2_history,) = rows[0]
-    if year2_history:
-        return
-    for slice_name in intraday_extended_slices():
-        uri = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY_EXTENDED&symbol={symbol}&interval=5min&slice={slice_name}&apikey={alphavantage_key}&adjusted=false"
-        req = alphavantage_request(uri)
-        vars_list = list(map(lambda row: convert_candlestick_row(symbol, row), iter_csv_rows_from_request(req)))
-        cursor.execute("BEGIN TRANSACTION")
-        execute_batch(cursor,"""
-            INSERT INTO candlestick_5min VALUES(
-                %s,
-                (%s AT TIME ZONE 'America/New_York')::TIMESTAMPTZ,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s
-            ) ON CONFLICT ON CONSTRAINT candlestick_5min_symbol_timestamp_key DO NOTHING
-        """, vars_list)
-        cursor.execute("COMMIT TRANSACTION")
-
-    cursor.execute("""
-        UPDATE meta_updates_table 
-            SET year2_history = 'true' 
-        WHERE symbol = %s AND table_name = 'candlestick_5min'
-    """, (symbol,))
-    print(f'finished {symbol}')
+        print(f'finished {symbol}')

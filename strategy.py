@@ -1,10 +1,13 @@
-from datetime import date, datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo, time
 from types import CellType
 from typing import Any, Tuple, List
 
+import numpy as np
+from numpy.core.fromnumeric import std
 from sm_util import historical_database
 from enum import Enum
 import psycopg2
+import fastdtw
 
 class StockAction(Enum):
     BUY = 0
@@ -339,6 +342,85 @@ def count_retests(con, symbol, start_date: datetime, end_date: datetime, look_fo
         retest_counts.append((start_timestamp, retest_count))
     return retest_counts
 
+def normalize_nd_array_(arr):
+    width, height = arr.shape;
 
+    assert(width >= 2)
 
+    mins_ = [float('Inf')] * height
+    maxs_ = [-float('Inf')] * height
+    for i in range(width):
+        for j in range(height):
+            mins_[j] = min(arr[i][j], mins_[j])
+            maxs_[j] = max(arr[i][j], maxs_[j])
+    mins = np.array(mins_)
+    maxs = np.array(maxs_)
+    return (arr - mins) / (maxs - mins)
+
+def normalize_nd_array(arr):
+    width, height = arr.shape;
+
+    assert(width >= 2)
+
+    sums = [0] * height
+    sums_squared = [0] * height
+    for i in range(width):
+        for j in range(height):
+            sums[j] = sums[j] + float(arr[i][j])
+            sums_squared[j] = sums_squared[j] + float(arr[i][j] ** 2)
     
+    means = np.array(sums) / width
+    stddev = np.sqrt((np.array(sums_squared) / width) - (means ** 2))
+    arr_ = np.array([[float(arr[i][j]) for j in range(height)] for i in range(width)])
+    ret =  (arr_ - means) / stddev
+    return ret
+    
+
+def retests_early_low(con, symbol, timestamp: date):
+    data = None
+    start_date = datetime.combine(timestamp, time(9, 30), tzinfo=timezone.utc)
+    end_date = datetime.combine(timestamp, time(16, 0, tzinfo=timezone.utc))
+    with con.cursor() as cursor:
+        cursor.execute("""
+            SELECT timestamp, open, high, low, close, volume
+            FROM candlestick_5min
+            WHERE symbol = %s AND timestamp BETWEEN %s AND %s
+            ORDER BY timestamp ASC
+        """, (symbol, start_date, end_date))
+        data = cursor.fetchall()
+        if len(data) == 0:
+            return None
+
+    time_offset_i = 0
+    while data[time_offset_i][0] < start_date + timedelta(hours=3):
+        time_offset_i = time_offset_i + 1
+    
+    lowest_low_in_first_3_hours = min(data[:time_offset_i], key=lambda row: row[3])[3]
+    retest_count = 0
+    for i in range(time_offset_i, len(data)):
+        prev_high = data[i-1][2]
+        cur_low = data[i][3]
+        if cur_low <= lowest_low_in_first_3_hours <= prev_high:
+            retest_count = retest_count + 1
+    first_3_hours = np.array(list(map(lambda row: [row[1], row[2], row[3], row[4], row[5]], data[:time_offset_i])))
+    return (first_3_hours, retest_count)
+
+def k_most_similar_starts(con, k, symbol, cur_date: date, start_date: date, end_date: date):
+    cur_first_3_hours, cur_retest_count = retests_early_low(con, symbol, cur_date)
+    normalized_cur_first_3_hours = normalize_nd_array(cur_first_3_hours)
+    dates = []
+    for i in range((end_date - start_date).days):
+        train_date = start_date + timedelta(days=i)
+        if train_date == cur_date:
+            continue
+        row = retests_early_low(con, symbol, train_date)
+        if row == None:
+            continue
+        train_first_3_hours, train_retest_count = row
+        normalized_train_first_3_hours = normalize_nd_array(train_first_3_hours)
+        distance, path = fastdtw.dtw(normalized_cur_first_3_hours, normalized_train_first_3_hours)
+        dates.append((distance, train_date))
+
+    return sorted(dates, key=lambda row: row[0])[:k]
+
+        

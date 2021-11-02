@@ -40,7 +40,7 @@ def tweezer_bottom(data: Iterable[Tuple[datetime, float, float, float, float]]):
 
 def price_opens_lower_than_prev(data: Iterable[Tuple[datetime, float, float, float, float]]):
     prev = None
-    for (timestamp, open, high, low, close) in data: 
+    for (timestamp, open, high, low, close) in data:
         if prev == None:
             prev = (timestamp, open, high, low, close)
             continue
