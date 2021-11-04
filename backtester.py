@@ -120,5 +120,4 @@ def backtest_data(con, params):
             ret_str = ret_str + f"'{timestamp.date()}, {gain}\n"
             last_price = None
 
-
     return str.encode(ret_str)

@@ -45,7 +45,6 @@ def sentiment_trader_antivix(con, buy_point, observation_period, symbol, start_d
             obs_date = None
     return actions
 
-
 def sentiment_trader_antivix_5min(con, buy_point, observation_period, symbol, start_date: datetime, end_date: datetime):
     assert(end_date <= datetime(2021, 10, 1, tzinfo=timezone.utc))
     with con.cursor() as cursor:
