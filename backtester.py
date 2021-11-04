@@ -1,53 +1,51 @@
+from os import pipe
 import psycopg2
 from datetime import datetime, timezone
 from enum import Enum
-from sm_util import ArgumentError, parse_date
-from strategy import percent_return_daily, buying_enclosed_vix_daily
+from sm_util import ArgumentError, parse_date, check_args
+from strategy import percent_return_daily, buying_enclosed_vix_daily, sentiment_trader_antivix, percent_gains
+
+def check_symbol(con, symbol):
+    with con.cursor() as cursor:
+        cursor.execute("SELECT DISTINCT ON (symbol) symbol FROM meta_updates_table WHERE symbol = %s", (symbol,))
+        rows = cursor.fetchall()
+        if len(rows) == 0:
+            raise ArgumentError(f"Symbol name {symbol} is not supported")
+        return symbol
+
+def check_num(text):
+    f = None
+    try:
+        f = float(text)
+    except ValueError:
+        raise ArgumentError("Could not parse float")
+    return f
 
 def query_table(con, params):
-    _start_date = params.get('start_date', None)
-    _end_date = params.get('end_date', None)
-    _metadata = params.get('metadata', None)
-    _order = params.get('order', None)
-    _symbol = params.get('symbol', None)
-    table_name = params.get('table_name', None)
     VALID_TABLE_NAMES = [
         'candlestick_5min', 
         'candlestick_daily',
         'vix_1hour',
         'vix_5min',
     ]
-    if table_name not in VALID_TABLE_NAMES:
-        raise ArgumentError("Invalid argument 'table_name'")
-    if table_name in ['candlestick_5min', 'candlestick_daily'] and _symbol == None:
-        raise ArgumentError("Candlestick data requires parameter symbol")
+    def check_if_valid_table(name):
+        if name in VALID_TABLE_NAMES:
+            return name
+        else:
+            raise ArgumentError("Invalid table_name")
 
-    start_date = None
-    end_date = None
-    try:
-        start_date_formatted = parse_date(_start_date)
-        start_date = start_date_formatted.strftime('%Y-%m-%d %H:%M:%S')
-        end_date_formatted = parse_date(_end_date)
-        end_date = end_date_formatted.strftime('%Y-%m-%d %H:%M:%S')
-    except ValueError:
-        raise ArgumentError("Date parameter was in an invalid format\nFormat the date in 2021-08-01 21:00")
-
-    metadata = None
-    if _metadata in ['t', 'true', 'True', 'TRUE']:
-        metadata = True
-    if _metadata in ['f', 'false', 'False', 'FALSE'] or _metadata == None:
-        metadata = False
-    if metadata == None:
-        raise ArgumentError("Optional parameter metadata can only be true or false")
+    parsed_args = check_args(params, {
+        "start_date": parse_date,
+        "end_date": parse_date,
+        "symbol": lambda symbol: check_symbol(con, symbol),
+        "table_name": check_if_valid_table
+    })
+    table_name = parsed_args['table_name']
+    start_date = parsed_args['start_date']
+    end_date = parsed_args['end_date']
+    _symbol = parsed_args['symbol']
+    order = 'DESC'
     
-    order = None
-    if _order in ['asc', 'ASC', 'ascending']:
-        order = 'ASC'
-    if _order in ['desc', 'DESC', 'descending'] or _order == None:
-        order = 'DESC'
-    if order == None:
-        raise ArgumentError("Optional parameter order can only be ascending or descending")
-
     cursor = con.cursor()
 
     data = None
@@ -77,7 +75,7 @@ def query_table(con, params):
             if not isinstance(row[i], datetime):
                 row_str = row_str +  str(row[i])
             else:
-                row_str = row_str + str(row[i])
+                row_str = row_str + str(row[i].strftime(''))
             if i + 1 < len(row):
                 row_str = row_str + ","
         row_str = row_str + '\n'
@@ -85,36 +83,42 @@ def query_table(con, params):
     return str.encode(row_str)
     
 def backtest_data(con, params):
-    symbol = params.get('symbol', None)
-    if symbol == None:
-        raise ArgumentError('function BACKTEST requires parameter symbol')
-    _start_date = params.get('start_date', None)
-    start_date = None
-    try:
-        start_date = parse_date(_start_date)
-    except ValueError:
-        raise ArgumentError('paramter start_date was either missing or invalid')
+    VALID_BACKTESTERS = [
+        "sentiment_antivix"
+    ]
+    def check_backtester(x):
+        if x in VALID_BACKTESTERS:
+            return x
+        else:
+            raise ArgumentError("Invalid backtester")
     
-    _end_date = params.get('end_date', None)
-    end_date = None
-    try:
-        end_date = parse_date(_end_date)
-    except ValueError:
-        raise ArgumentError('paramter start_date was either missing or invalid')
-    pass
+    parsed_args = check_args(params, {
+        "symbol": lambda symbol: check_symbol(con, symbol),
+        "start_date": parse_date,
+        "end_date": parse_date,
+        "observation_period": check_num,
+        "buy_point": check_num,
+        "backtester": check_backtester
+    })
 
-    buy_point = params.get('buy_point', None)
-    if buy_point == None:
-        raise ArgumentError('parameter buy_point was either missing or invalid')
-    sell_point = params.get('sell_point', None)
-    if sell_point == None:
-        raise ArgumentError('parameter sell_point was either missing or invalid')
-        
-    buy_point = float(buy_point)
-    sell_point = float(sell_point)
-    
-    
-    h_actions = buying_enclosed_vix_daily(con, buy_point, sell_point, start_date, end_date)
-    
-    gains = percent_return_daily(con, h_actions, symbol)
-    return gains
+    actions = sentiment_trader_antivix(
+        con, 
+        parsed_args['buy_point'], 
+        parsed_args['observation_period'], 
+        parsed_args['symbol'], 
+        parsed_args['start_date'], 
+        parsed_args['end_date']
+    )
+    gains = percent_gains(actions)
+    last_price = None
+    ret_str = "timestamp, gain\n"
+    for timestamp, action, price in actions:
+        if last_price == None:
+            last_price = price
+        else:
+            gain = round(((price - last_price) / last_price) * 100, 2)
+            ret_str = ret_str + f"'{timestamp.date()}, {gain}\n"
+            last_price = None
+
+
+    return str.encode(ret_str)

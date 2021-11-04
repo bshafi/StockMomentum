@@ -1,3 +1,4 @@
+from time import localtime
 from backtester import query_table, backtest_data
 import sm_util
 from sm_util import ArgumentError, historical_database
