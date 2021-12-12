@@ -1,7 +1,8 @@
 import csv
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict
 import psycopg2
+import numpy as np
 
 credentials_file = None
 
