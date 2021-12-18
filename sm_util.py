@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Dict
 import psycopg2
 import numpy as np
+import urllib.request as request
 
 credentials_file = None
 
@@ -33,7 +34,7 @@ def check_args(args, arg_requirements):
 
 
 def iter_csv_rows_from_request(req, skip_first = True):
-    rdr = csv.reader(req.content.decode('utf-8').splitlines(), delimiter=',')
+    rdr = csv.reader(req.read().decode('utf-8').splitlines(), delimiter=',')
     first_row = True
     second_row_checked = False
     for row in rdr:
@@ -78,3 +79,11 @@ def parse_date(s):
         return date
     else:
         raise ArgumentError("Date was in an improper format")
+
+def requests_get(url, headers={}, proxies=None):
+    req = request.Request(url, headers=headers)
+    if proxies != None:
+        for (key, value) in proxies.items():
+            req.set_proxy(value, key)
+    
+    return request.urlopen(req)
